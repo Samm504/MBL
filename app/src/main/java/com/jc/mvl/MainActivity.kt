@@ -13,12 +13,14 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -29,6 +31,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.jc.mvl.ui.theme.MVLTheme
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import java.time.Duration
@@ -50,12 +53,18 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            MVLTheme {
+            // Dark mode state lives here so it wraps MVLTheme
+            var isDarkMode by remember { mutableStateOf(false) }
+
+            MVLTheme(darkTheme = isDarkMode) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    MvlApp()
+                    MvlApp(
+                        isDarkMode = isDarkMode,
+                        onToggleDarkMode = { isDarkMode = !isDarkMode }
+                    )
                 }
             }
         }
@@ -96,12 +105,16 @@ fun parseSpokenTime(input: String): LocalTime? {
 }
 
 @Composable
-fun MvlApp() {
+fun MvlApp(
+    isDarkMode: Boolean = false,
+    onToggleDarkMode: () -> Unit = {}
+) {
     val context = LocalContext.current
     val activity = context as ComponentActivity
     val scope = rememberCoroutineScope()
     val dataStore = activity.dataStore
     val formatter = DateTimeFormatter.ofPattern("hh:mm a")
+    val clockFormatter = DateTimeFormatter.ofPattern("hh:mm:ss a")
 
     var manualMode by remember { mutableStateOf(false) }
     var officeMode by remember { mutableStateOf(false) }
@@ -114,8 +127,16 @@ fun MvlApp() {
 
     var officeStepOutEstimate by remember { mutableStateOf<String?>(null) }
     var signOutEstimate by remember { mutableStateOf<String?>(null) }
-
     var selectedManualTime by remember { mutableStateOf<LocalTime?>(null) }
+
+    // Live clock
+    var currentTime by remember { mutableStateOf(LocalTime.now()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            currentTime = LocalTime.now()
+            delay(1000L)
+        }
+    }
 
     val keySignIn = stringPreferencesKey("sign_in")
     val keySignOut = stringPreferencesKey("sign_out")
@@ -124,7 +145,6 @@ fun MvlApp() {
     val keyResult = stringPreferencesKey("result")
     val keyOfficeMode = stringPreferencesKey("office_mode")
 
-    // Voice launcher — properly registered inside composable
     val voiceLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -240,7 +260,7 @@ fun MvlApp() {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFFF8F8FF))
+            .background(MaterialTheme.colorScheme.background)
             .padding(16.dp)
     ) {
         Column(
@@ -250,18 +270,41 @@ fun MvlApp() {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+
+            // Title row with dark mode toggle
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Made by Lab",
+                    fontSize = 26.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                IconButton(onClick = onToggleDarkMode) {
+                    Icon(
+                        imageVector = if (isDarkMode) Icons.Filled.LightMode else Icons.Filled.DarkMode,
+                        contentDescription = if (isDarkMode) "Switch to Light Mode" else "Switch to Dark Mode",
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+
+            // Live clock
             Text(
-                text = "Made by Lab",
-                fontSize = 26.sp,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary
+                text = currentTime.format(clockFormatter),
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onBackground
             )
 
             // Toggles section
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFFF0F4FF)),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
                 elevation = CardDefaults.cardElevation(4.dp)
             ) {
                 Column(
@@ -273,7 +316,10 @@ fun MvlApp() {
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Manual Time Entry")
+                        Text(
+                            "Manual Time Entry",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                         Switch(checked = manualMode, onCheckedChange = { manualMode = it })
                     }
 
@@ -282,7 +328,10 @@ fun MvlApp() {
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Office Mode")
+                        Text(
+                            "Office Mode",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                         Switch(checked = officeMode, onCheckedChange = {
                             officeMode = it
                             if (signInTime != null) {
@@ -314,7 +363,10 @@ fun MvlApp() {
                         }
 
                         selectedManualTime?.let {
-                            Text("Selected Time: ${it.format(formatter)}")
+                            Text(
+                                "Selected Time: ${it.format(formatter)}",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                     }
                 }
@@ -324,7 +376,7 @@ fun MvlApp() {
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF5F7)),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                 elevation = CardDefaults.cardElevation(4.dp)
             ) {
                 Column(
@@ -387,24 +439,56 @@ fun MvlApp() {
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFFFDF8FF)),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
                 elevation = CardDefaults.cardElevation(4.dp)
             ) {
                 Column(
                     modifier = Modifier.padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    signInTime?.let { Text("Signed In: ${it.format(formatter)}") }
-                    officeStepOutEstimate?.let { Text("You may step out after: $it") }
-                    lastStepOut?.let { Text("Currently Stepped Out: ${it.format(formatter)}") }
+                    signInTime?.let {
+                        Text(
+                            "Signed In: ${it.format(formatter)}",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    officeStepOutEstimate?.let {
+                        Text(
+                            "You may step out after: $it",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    lastStepOut?.let {
+                        Text(
+                            "Currently Stepped Out: ${it.format(formatter)}",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                     if (breaks.isNotEmpty()) {
-                        Text("Breaks:")
+                        Text(
+                            "Breaks:",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                         breaks.forEachIndexed { index, pair ->
-                            Text("Break ${index + 1}: ${pair.first.format(formatter)} - ${pair.second.format(formatter)}")
+                            Text(
+                                "  Break ${index + 1}: ${pair.first.format(formatter)} - ${pair.second.format(formatter)}",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                     }
-                    signOutTime?.let { Text("Signed Out: ${it.format(formatter)}") }
-                    result?.let { Text("Final Sign Out: $it", fontWeight = FontWeight.Medium) }
+                    signOutTime?.let {
+                        Text(
+                            "Signed Out: ${it.format(formatter)}",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    result?.let {
+                        Text(
+                            "Final Sign Out: $it",
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
             }
 
@@ -432,7 +516,7 @@ fun MvlApp() {
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
                 .shadow(10.dp, RoundedCornerShape(24.dp)),
-            colors = CardDefaults.cardColors(containerColor = Color(0xFFEEF6FF)),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
             shape = RoundedCornerShape(24.dp)
         ) {
             Column(
@@ -440,15 +524,15 @@ fun MvlApp() {
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
-                    text = "    Estimated Sign Out Time",
+                    text = "   Estimated Sign Out Time",
                     fontSize = 16.sp,
-                    color = Color(0xFF3366CC),
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
                     fontWeight = FontWeight.Medium
                 )
                 Text(
                     text = signOutEstimate ?: "--:--",
                     fontSize = 34.sp,
-                    color = Color(0xFF003366),
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
                     fontWeight = FontWeight.Bold,
                     textAlign = TextAlign.Center
                 )
