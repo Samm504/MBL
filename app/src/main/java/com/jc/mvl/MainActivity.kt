@@ -1,10 +1,15 @@
 package com.jc.mvl
 
 import android.app.TimePickerDialog
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Bundle
+import android.speech.RecognizerIntent
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -19,6 +24,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -29,28 +35,70 @@ import java.time.Duration
 import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
+import java.util.Locale
 
 private val ComponentActivity.dataStore by preferencesDataStore(name = "mvl_cache")
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(android.Manifest.permission.RECORD_AUDIO), 0)
+        }
+
         setContent {
             MVLTheme {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    MvlApp(this)
+                    MvlApp()
                 }
             }
         }
     }
 }
 
+fun parseSpokenTime(input: String): LocalTime? {
+    val text = input.lowercase(Locale.getDefault()).trim()
+
+    val isPM = text.contains("pm") || text.contains("p.m")
+    val isAM = text.contains("am") || text.contains("a.m")
+
+    val wordNumbers = mapOf(
+        "zero" to 0, "one" to 1, "two" to 2, "three" to 3, "four" to 4,
+        "five" to 5, "six" to 6, "seven" to 7, "eight" to 8, "nine" to 9,
+        "ten" to 10, "eleven" to 11, "twelve" to 12, "thirteen" to 13,
+        "fourteen" to 14, "fifteen" to 15, "sixteen" to 16, "seventeen" to 17,
+        "eighteen" to 18, "nineteen" to 19, "twenty" to 20, "thirty" to 30,
+        "forty" to 40, "fifty" to 50, "o'clock" to 0, "o'clock" to 0
+    )
+
+    var normalized = text
+    wordNumbers.forEach { (word, num) -> normalized = normalized.replace(word, num.toString()) }
+    normalized = normalized.replace(Regex("[^0-9 :]"), " ").trim()
+    val parts = normalized.split(Regex("\\s+|:")).filter { it.isNotEmpty() }
+
+    var hour = parts.getOrNull(0)?.toIntOrNull() ?: return null
+    val minute = parts.getOrNull(1)?.toIntOrNull() ?: 0
+
+    if (isPM && hour != 12) hour += 12
+    if (isAM && hour == 12) hour = 0
+
+    return try {
+        LocalTime.of(hour, minute)
+    } catch (e: Exception) {
+        null
+    }
+}
+
 @Composable
-fun MvlApp(activity: ComponentActivity) {
+fun MvlApp() {
     val context = LocalContext.current
+    val activity = context as ComponentActivity
     val scope = rememberCoroutineScope()
     val dataStore = activity.dataStore
     val formatter = DateTimeFormatter.ofPattern("hh:mm a")
@@ -69,7 +117,6 @@ fun MvlApp(activity: ComponentActivity) {
 
     var selectedManualTime by remember { mutableStateOf<LocalTime?>(null) }
 
-    // DataStore keys
     val keySignIn = stringPreferencesKey("sign_in")
     val keySignOut = stringPreferencesKey("sign_out")
     val keyBreaks = stringPreferencesKey("breaks")
@@ -77,7 +124,25 @@ fun MvlApp(activity: ComponentActivity) {
     val keyResult = stringPreferencesKey("result")
     val keyOfficeMode = stringPreferencesKey("office_mode")
 
-    // Load cached data
+    // Voice launcher — properly registered inside composable
+    val voiceLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val matches = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+        val spokenText = matches?.firstOrNull()
+        if (spokenText != null) {
+            val parsed = parseSpokenTime(spokenText)
+            if (parsed != null) {
+                selectedManualTime = parsed
+                Toast.makeText(context, "Time set to ${parsed.format(formatter)}", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(context, "Couldn't parse \"$spokenText\". Try \"8 30 AM\".", Toast.LENGTH_LONG).show()
+            }
+        } else {
+            Toast.makeText(context, "No result. Try again.", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     LaunchedEffect(Unit) {
         val prefs = dataStore.data.first()
         prefs[keySignIn]?.takeIf { it.isNotEmpty() }?.let { signInTime = LocalDateTime.parse(it) }
@@ -111,30 +176,20 @@ fun MvlApp(activity: ComponentActivity) {
     fun calculateSignOutTime(): String {
         if (signInTime == null) return "Please sign in first"
         var totalBreakMinutes = 0L
-        breaks.forEach {
-            totalBreakMinutes += Duration.between(it.first, it.second).toMinutes()
-        }
-
-        val totalWorkMinutes = 9 * 60L
-        val adjustedSignOut = signInTime!!.plusMinutes(totalWorkMinutes + totalBreakMinutes)
-        return adjustedSignOut.format(formatter)
+        breaks.forEach { totalBreakMinutes += Duration.between(it.first, it.second).toMinutes() }
+        return signInTime!!.plusMinutes(9 * 60L + totalBreakMinutes).format(formatter)
     }
 
     fun calculateOfficeStepOutTime(): String {
         if (signInTime == null) return ""
-        val stepOutEstimate = signInTime!!.plusHours(4)
-        return stepOutEstimate.format(formatter)
+        return signInTime!!.plusHours(4).format(formatter)
     }
 
     fun calculateSignOutEstimate(): String {
         if (signInTime == null) return ""
         var totalBreakMinutes = 0L
-        breaks.forEach {
-            totalBreakMinutes += Duration.between(it.first, it.second).toMinutes()
-        }
-        val totalWorkMinutes = 9 * 60L
-        val estimatedSignOut = signInTime!!.plusMinutes(totalWorkMinutes + totalBreakMinutes)
-        return estimatedSignOut.format(formatter)
+        breaks.forEach { totalBreakMinutes += Duration.between(it.first, it.second).toMinutes() }
+        return signInTime!!.plusMinutes(9 * 60L + totalBreakMinutes).format(formatter)
     }
 
     fun getChosenTime(): LocalDateTime? {
@@ -154,13 +209,31 @@ fun MvlApp(activity: ComponentActivity) {
         val now = LocalTime.now()
         TimePickerDialog(
             context,
-            { _, hour, minute ->
-                selectedManualTime = LocalTime.of(hour, minute)
-            },
-            now.hour,
-            now.minute,
-            false
+            { _, hour, minute -> selectedManualTime = LocalTime.of(hour, minute) },
+            now.hour, now.minute, false
         ).show()
+    }
+
+    fun startVoiceInput() {
+        if (ContextCompat.checkSelfPermission(context, android.Manifest.permission.RECORD_AUDIO)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            Toast.makeText(context, "Microphone permission required.", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
+            putExtra(RecognizerIntent.EXTRA_PROMPT, "Say a time, e.g. \"8 30 AM\"")
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+        }
+
+        try {
+            voiceLauncher.launch(intent)
+        } catch (e: Exception) {
+            Toast.makeText(context, "Voice input not supported on this device.", Toast.LENGTH_SHORT).show()
+        }
     }
 
     // --- UI ---
@@ -221,11 +294,24 @@ fun MvlApp(activity: ComponentActivity) {
                     }
 
                     if (manualMode) {
-                        Button(
-                            onClick = { showTimePicker() },
+                        Row(
                             modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(12.dp)
-                        ) { Text("Pick Manual Time") }
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Button(
+                                onClick = { showTimePicker() },
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(12.dp)
+                            ) { Text("Pick Time") }
+
+                            Button(
+                                onClick = { startVoiceInput() },
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Text("🎙️ Voice")
+                            }
+                        }
 
                         selectedManualTime?.let {
                             Text("Selected Time: ${it.format(formatter)}")
@@ -251,8 +337,7 @@ fun MvlApp(activity: ComponentActivity) {
                             val time = getChosenTime()
                             time?.let {
                                 signInTime = it
-                                officeStepOutEstimate =
-                                    if (officeMode) calculateOfficeStepOutTime() else null
+                                officeStepOutEstimate = if (officeMode) calculateOfficeStepOutTime() else null
                                 signOutEstimate = calculateSignOutEstimate()
                                 saveCache()
                             }
@@ -263,21 +348,14 @@ fun MvlApp(activity: ComponentActivity) {
                                 Button(onClick = {
                                     val time = getChosenTime()
                                     val canStepOut = manualMode ||
-                                            (officeMode && Duration.between(
-                                                signInTime,
-                                                time
-                                            ).toHours() >= 4) ||
+                                            (officeMode && Duration.between(signInTime, time).toHours() >= 4) ||
                                             !officeMode
                                     if (canStepOut) {
                                         lastStepOut = time
                                         signOutEstimate = calculateSignOutEstimate()
                                         saveCache()
                                     } else {
-                                        Toast.makeText(
-                                            context,
-                                            "You can only step out after 4 hours in office.",
-                                            Toast.LENGTH_SHORT
-                                        ).show()
+                                        Toast.makeText(context, "You can only step out after 4 hours in office.", Toast.LENGTH_SHORT).show()
                                     }
                                 }) { Text("Step Out") }
 
@@ -316,32 +394,17 @@ fun MvlApp(activity: ComponentActivity) {
                     modifier = Modifier.padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    signInTime?.let {
-                        Text("Signed In: ${it.format(formatter)}")
-                    }
-
-                    if (officeStepOutEstimate != null) {
-                        Text("You may step out after: $officeStepOutEstimate")
-                    }
-
-                    if (lastStepOut != null) {
-                        Text("Currently Stepped Out: ${lastStepOut!!.format(formatter)}")
-                    }
-
+                    signInTime?.let { Text("Signed In: ${it.format(formatter)}") }
+                    officeStepOutEstimate?.let { Text("You may step out after: $it") }
+                    lastStepOut?.let { Text("Currently Stepped Out: ${it.format(formatter)}") }
                     if (breaks.isNotEmpty()) {
                         Text("Breaks:")
                         breaks.forEachIndexed { index, pair ->
                             Text("Break ${index + 1}: ${pair.first.format(formatter)} - ${pair.second.format(formatter)}")
                         }
                     }
-
-                    signOutTime?.let {
-                        Text("Signed Out: ${it.format(formatter)}")
-                    }
-
-                    result?.let {
-                        Text("Final Sign Out: $it", fontWeight = FontWeight.Medium)
-                    }
+                    signOutTime?.let { Text("Signed Out: ${it.format(formatter)}") }
+                    result?.let { Text("Final Sign Out: $it", fontWeight = FontWeight.Medium) }
                 }
             }
 
@@ -359,13 +422,11 @@ fun MvlApp(activity: ComponentActivity) {
                     },
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp)
-                ) {
-                    Text("Reset Day")
-                }
+                ) { Text("Reset Day") }
             }
         }
 
-        // Persistent Bottom Card for Estimated Sign Out
+        // Bottom estimated sign out card
         Card(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
